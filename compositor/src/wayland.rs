@@ -1,51 +1,47 @@
 use anyhow::Result;
-use calloop::EventLoop;
 use log::info;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use wayland_server::Display;
-
-use crate::state::OblivionState;
 
 pub struct WaylandManager {
-    display: Option<Display>,
     socket_name: String,
+    running: Arc<Mutex<bool>>,
 }
 
 impl WaylandManager {
     pub fn new() -> Self {
         Self {
-            display: None,
             socket_name: String::new(),
+            running: Arc::new(Mutex::new(true)),
         }
     }
 
-    pub fn init(event_loop: &mut EventLoop<OblivionState>) -> Result<()> {
+    pub fn init() -> Result<Self> {
         info!("Initializing Wayland server");
 
-        let mut display = Display::new();
-
-        let socket_name = display.add_socket_auto()?;
-        info!("Wayland socket created: {}", socket_name);
+        let socket_name =
+            std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+        info!("Wayland socket: {}", socket_name);
 
         let manager = WaylandManager {
-            display: Some(display),
             socket_name,
+            running: Arc::new(Mutex::new(true)),
         };
 
-        let state = event_loop.state();
-        state.wayland = Arc::new(Mutex::new(manager));
-
         info!("Wayland server initialized");
-        Ok(())
+        Ok(manager)
     }
 
     pub fn socket_name(&self) -> &str {
         &self.socket_name
     }
 
-    pub fn get_display(&self) -> Option<&Display> {
-        self.display.as_ref()
+    pub fn is_running(&self) -> bool {
+        *self.running.lock()
+    }
+
+    pub fn stop(&self) {
+        *self.running.lock() = false;
     }
 }
 

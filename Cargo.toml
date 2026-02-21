@@ -13,6 +13,6 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["OblivionOS Team <team@oblivionos.eu>"]
+authors = ["OblivionOS Team <developer@skygenesisenterprise.com>"]
 license = "MIT"
-repository = "https://github.com/oblivionos/oblivionos"
+repository = "https://github.com/skygenesisenterprise/oblivionos"

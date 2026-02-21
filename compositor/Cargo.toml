@@ -10,7 +10,7 @@ repository.workspace = true
 wayland-server = "0.30"
 wayland-protocols = { version = "0.30", features = ["unstable", "server"] }
 wayland-scanner = "0.30"
-calloop = "0.12"
+calloop = "0.14"
 log = "0.4"
 env_logger = "0.11"
 anyhow = "1.0"
