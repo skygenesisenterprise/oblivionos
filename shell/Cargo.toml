@@ -4,6 +4,23 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "oblivion-shell"
+path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+directories.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+env_logger = "0.11"
