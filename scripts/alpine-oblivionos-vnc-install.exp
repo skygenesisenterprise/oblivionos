@@ -1,0 +1,137 @@
+#!/usr/bin/expect -f
+# scripts/alpine-oblivionos-vnc-install.exp
+#
+# Drives setup-alpine over a serial console QEMU link, using
+# alpine-oblivionos-vnc-answers.conf for non-interactive answers, then runs
+# alpine-oblivionos-vnc-post.sh (Xfce + x11vnc + openrc autostart).
+#
+# Usage:
+#   expect scripts/alpine-oblivionos-vnc-install.exp <iso> <qcow2> <share_dir>
+#
+# Mirrors scripts/alpine-rdp-install.exp exactly — only the post-install
+# script and qcow2 filename differ (oblivionos-vnc.qcow2 vs rdp).
+
+set timeout 600
+set iso [lindex $argv 0]
+set qcow2 [lindex $argv 1]
+set share [lindex $argv 2]
+
+log_user 1
+
+# ---- Launch QEMU with the installer ISO + serial console --------
+spawn qemu-system-x86_64 \
+    -m 2G \
+    -smp 2 \
+    -machine accel=kvm:tcg \
+    -vga qxl \
+    -display none \
+    -drive file=$qcow2,format=qcow2,if=virtio \
+    -cdrom $iso \
+    -boot d \
+    -virtfs local,path=$share,mount_tag=hostshare,security_model=none \
+    -serial stdio \
+    -nographic \
+    -name "OblivionOS-VNC-Install"
+
+set qemu_id $spawn_id
+
+# ---- Wait for the Alpine login prompt --------------------------
+expect {
+    -re "login:" {
+        send "root\r"
+    }
+    timeout {
+        puts stderr "ERROR: timeout waiting for login prompt"
+        exit 1
+    }
+}
+
+expect {
+    -re "(Welcome to Alpine|Live)" {
+        # new in v3.20: auto-login root
+    }
+    timeout {
+        # fall through; we may already be at # prompt
+    }
+}
+
+# Wait for shell prompt
+expect {
+    -re "# $" {
+        send "setup-alpine -f /media/hostshare/alpine-oblivionos-vnc-answers.conf\r"
+    }
+    timeout {
+        puts stderr "ERROR: timeout waiting for shell prompt"
+        exit 1
+    }
+}
+
+# ---- Step through setup-alpine interactively --------------------
+# setup-alpine -f answers most questions from the file, but still asks
+# to confirm. Each expect is bounded so a hairy answer file doesn't hang
+# the script forever.
+expect {
+    -re "Enter where to store configs.*\\(\\/media\\/hostshare\\)?.*\\?.*\\?"    { send "/media/hostshare/alpine-conf\r"; exp_continue }
+    -re "Enter apk cache directory.*\\?"                     { send "\r"; exp_continue }
+    -re "Proceed.*\\?.*\\(y\\/n\\)"                          { send "y\r" }
+    -re "Which disk.*\\?"                                    { send "\r" }
+    -re "How would you like to use it.*\\?"                 { send "sys\r" }
+    -re "WARNING:.*Data on.*will be erased.*Proceed.*\\?.*\\(y\\/n\\)" { send "y\r" }
+    timeout {
+        puts stderr "ERROR: setup-alpine stuck at an unknown prompt"
+        exit 1
+    }
+}
+
+# setup-alpine prints 'reboot' as its last step. We don't want a real reboot
+# because QEMU is doing the install, so we catch it and proceed to post-install.
+expect {
+    -re "reboot" {
+        send "\r"
+    }
+    timeout {
+        puts stderr "ERROR: never saw setup-alpine 'reboot' mark"
+        exit 1
+    }
+}
+
+# Some Alpine ISOs auto-reboot within ~2 seconds. Kill that here so we
+# can run our post-install before the system comes back up.
+after 1500
+
+set procs [exec ps -o pid= -o comm= -ax]
+puts "alive-ish: log shows the install phase finished."
+
+# ---- Run the post-install script ------------------------------
+send "\r"
+expect {
+    -re "(login:|Welcome)" {
+        send "root\r"
+    }
+    timeout {
+        # Already at # prompt
+    }
+}
+
+expect {
+    -re "# $" {
+        send "mount -t 9p -o trans=virtio hostshare /mnt && sh /mnt/alpine-oblivionos-vnc-post.sh\r"
+    }
+    timeout {
+        puts stderr "ERROR: never reached a shell after setup-alpine"
+        exit 1
+    }
+}
+
+expect {
+    -re "\\\[post\\\] done\\." {
+        send "poweroff\r"
+    }
+    timeout {
+        puts stderr "ERROR: post-install did not finish cleanly"
+        exit 1
+    }
+}
+
+expect eof
+puts "Install phase finished; qcow2 at $qcow2 is ready to boot with --boot."

@@ -1,0 +1,138 @@
+#!/usr/bin/expect -f
+# scripts/alpine-rdp-install.exp — drives `setup-alpine` + post-install
+# over the QEMU serial console for scripts/preview-rdp.sh --install.
+#
+# Phase A: boot Alpine live ISO with -cdrom + qcow2 attached, run
+#          setup-alpine -e -a against /mnt/share/alpine-answers.conf
+#          which sys-installs Alpine to the qcow2. Alpine
+#          auto-reboots once setup-alpine completes.
+# Phase B: after the reboot, expect detects the new login prompt on
+#          the same serial console, logs in as root, mounts the
+#          9p share, and runs /mnt/share/alpine-rdp-post.sh which
+#          apk-installs xfce + xrdp and reboots.
+# Phase C: the post-install script issues `reboot`; the VM comes
+#          back up; we shut it down cleanly.
+#
+# Usage: expect scripts/alpine-rdp-install.exp <iso> <qcow2> <share_dir>
+# Timeout: deliberately long (10 min) because apk install over the
+# Alpine network is the slowest step.
+
+# Total run timeout: leaves headroom over the ~5-15 min end-to-end install
+# (apk fetch of ~300 MB xfce+xrdp dominates). 900s=15 min, plus this is
+# only the inner-loop timer — the outer `wait`-equivalent is your shell.
+set timeout 900
+
+set iso    [lindex $argv 0]
+set qcow2  [lindex $argv 1]
+set share  [lindex $argv 2]
+
+# Helpful for debugging when something goes wrong; safe to keep commented.
+# exp_internal 1
+
+set log_user 1
+
+# --- Spawn QEMU. The serial console is mon:stdio so we own its I/O. ---
+spawn qemu-system-x86_64 \
+    -m 2G \
+    -smp 2 \
+    -machine accel=kvm:tcg \
+    -vga qxl \
+    -display none \
+    -serial mon:stdio \
+    -drive "file=$iso,format=raw,readonly=on,if=virtio" \
+    -drive "file=$qcow2,format=qcow2,if=virtio" \
+    -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+    -device virtio-net-pci,netdev=net0 \
+    -virtfs local,path=$share,mount_tag=hostshare,security_model=none \
+    -name "OblivionOS-RDP-Install"
+
+# Press a key so the syslinux boot menu doesn't wait the full countdown.
+sleep 2
+send "\r"
+
+# --- Phase A.1: wait for live-ISO login prompt ---
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "ERROR: never reached login on live ISO"; exit 1 }
+}
+
+expect {
+    -re {[#$] $} {}
+    timeout { puts "ERROR: prompt not reached after root login"; exit 1 }
+}
+
+# Mount the host's 9p share so the in-guest installer can read its answers
+# file and post-install script.
+send "mount -t 9p -o trans=virtio hostshare /mnt/share\r"
+expect {
+    -re {[#$] $} { send "ls /mnt/share && cat /mnt/share/alpine-answers.conf | head -2\r" }
+    timeout { puts "ERROR: 9p share mount failed"; exit 1 }
+}
+expect {
+    -re {[#$] $} {}
+    timeout { puts "ERROR: lost prompt after share listing"; exit 1 }
+}
+
+# --- Phase A.2: drive setup-alpine. The answers file handles every prompt ---
+# so we just wait for it to complete and the VM to reboot.
+puts "\n>>> expect: setup-alpine -e -a (5-15 minutes) <<<\n"
+send "setup-alpine -e -a /mnt/share/alpine-answers.conf\r"
+expect {
+    -re {reboot|System will reboot|Please reboot|Setting kernel command} {}
+    -re {Welcome to Alpine!} {}
+    timeout { puts "ERROR: setup-alpine timed out after 10 minutes"; exit 1 }
+}
+
+# Wait for the post-install reboot to come back up.
+# After reboot, we should land at the qcow2 install's login prompt.
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "ERROR: did not see login after reboot"; exit 1 }
+}
+expect {
+    -re {[#$] $} {}
+    timeout { puts "ERROR: prompt not reached after second root login"; exit 1 }
+}
+
+# --- Phase B: post-install on the installed system ---
+send "mount -t 9p -o trans=virtio hostshare /mnt/share\r"
+expect {
+    -re {[#$] $} {}
+    timeout { puts "ERROR: 9p share re-mount on qcow2 failed"; exit 1 }
+}
+
+puts "\n>>> expect: running post-install (xfce + xrdp) — this is the slowest step (5-10 min) <<<\n"
+send "sh /mnt/share/alpine-rdp-post.sh\r"
+expect {
+    -re {reboot|Syncing|Connection to .* closed} {}
+    timeout { puts "ERROR: post-install timed out after 10 minutes"; exit 1 }
+}
+
+# --- Phase C: wait for the post-install reboot; expect the VM to come back.
+# The user will hit this script's --boot path next, which expects xrdp up. ---
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "ERROR: did not see login after post-install reboot"; exit 1 }
+}
+expect {
+    -re {[#$] $} {}
+    timeout { puts "ERROR: prompt not reached after final root login"; exit 1 }
+}
+
+# Confirm xrdp package is visible.
+send "rc-service xrdp status >/dev/null 2>&1; echo xrdp-installed-yes\r"
+expect {
+    "xrdp-installed-yes" { }
+    timeout { puts "WARN: couldn't confirm xrdp install state (continuing)" }
+}
+
+# Cleanly shut down the VM.
+send "poweroff\r"
+expect {
+    -re "reboot: Power down|System halted" { }
+    timeout { }
+}
+
+# QEMU exits when the guest powers off.
+expect eof
+puts "\n>>> expect: install phase finished cleanly <<<\n"

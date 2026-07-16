@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::info;
+use tracing::info;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
